@@ -183,24 +183,33 @@ export async function onRequestPost(context) {
             subDomain = '@';
         }
 
-        // 检查是否已存在相同记录
+        // 检查是否已存在同名记录（相同子域名和类型）
         const listResult = await callDnspodApi(dnspodSecretId, dnspodSecretKey, 'DescribeRecordList', {
             Domain: matchedDomain,
             Subdomain: subDomain,
             RecordType: record_type
         });
 
+        // 删除所有同名的旧记录
         if (listResult.Response?.RecordList?.length > 0) {
-            const existingRecord = listResult.Response.RecordList.find(r => r.Value === txt_value);
-            if (existingRecord) {
-                return new Response(JSON.stringify({
-                    success: true,
-                    message: 'Record already exists',
-                    record_id: existingRecord.RecordId,
-                    domain: matchedDomain,
-                    sub_domain: subDomain
-                }), {
-                    headers: { 'Content-Type': 'application/json' }
+            for (const oldRecord of listResult.Response.RecordList) {
+                // 如果值相同，直接返回成功（避免不必要的删除和创建）
+                if (oldRecord.Value === txt_value) {
+                    return new Response(JSON.stringify({
+                        success: true,
+                        message: 'Record already exists with same value',
+                        record_id: oldRecord.RecordId,
+                        domain: matchedDomain,
+                        sub_domain: subDomain
+                    }), {
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+
+                // 删除旧记录
+                await callDnspodApi(dnspodSecretId, dnspodSecretKey, 'DeleteRecord', {
+                    Domain: matchedDomain,
+                    RecordId: oldRecord.RecordId
                 });
             }
         }
