@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Globe, Server, User, Shield, Key, LogOut, Plus, Trash2, Edit2, ExternalLink, RefreshCw, Zap, Languages, CheckCircle, AlertCircle, X, Search, ChevronDown, Upload, Download, Copy } from 'lucide-react';
+import { Globe, Server, User, Shield, Key, LogOut, Plus, Trash2, Edit2, ExternalLink, RefreshCw, Zap, Languages, CheckCircle, AlertCircle, X, Search, ChevronDown, Upload, Download, Copy, ArrowLeft } from 'lucide-react';
 
 // Translations
 const translations = {
@@ -128,6 +128,14 @@ const translations = {
         verificationRecords: '验证记录',
         noVerificationNeeded: '不需要验证',
         editSaaS: '编辑自定义主机名',
+        autoVerify: '自动配置',
+        autoVerifyToDnspod: '自动配置到 DNSPod',
+        selectDnspodDomain: '选择 DNSPod 域名',
+        dnspodNotConfigured: 'DNSPod 未配置，请设置环境变量',
+        autoVerifySuccess: 'DNS 验证记录已自动配置',
+        autoVerifyFailed: '自动配置失败',
+        loadingDomains: '加载域名列表...',
+        noDomains: '未找到域名',
         minTlsVersion: '最低 TLS 版本',
         certType: '证书类型',
         certCloudflare: '由 Cloudflare 提供',
@@ -151,6 +159,21 @@ const translations = {
         invalidToken: '无效的 API 令牌',
         tokenRequired: '请输入 API 令牌',
         verifyFailed: '令牌校验失败',
+        // DNSPod 管理
+        dnspodManager: 'DNSPod 管理',
+        dnspodDomains: 'DNSPod 域名',
+        selectDomain: '选择域名',
+        dnspodRecords: 'DNS 记录',
+        addDnspodRecord: '添加记录',
+        editDnspodRecord: '编辑记录',
+        recordLine: '记录线路',
+        lineDefault: '默认',
+        subDomain: '主机记录',
+        recordValue: '记录值',
+        backToCloudflare: '返回 Cloudflare',
+        dnspodLoginRequired: '请先使用服务器模式登录',
+        noRecordsFound: '未找到记录',
+        confirmDeleteRecord: '确定要删除此记录吗？',
     },
     en: {
         title: 'DNS Manager',
@@ -277,6 +300,14 @@ const translations = {
         verificationRecords: 'Verification Records',
         noVerificationNeeded: 'No verification needed',
         editSaaS: 'Edit Custom Hostname',
+        autoVerify: 'Auto Configure',
+        autoVerifyToDnspod: 'Auto Configure to DNSPod',
+        selectDnspodDomain: 'Select DNSPod Domain',
+        dnspodNotConfigured: 'DNSPod not configured, please set environment variables',
+        autoVerifySuccess: 'DNS verification record configured',
+        autoVerifyFailed: 'Auto configuration failed',
+        loadingDomains: 'Loading domains...',
+        noDomains: 'No domains found',
         minTlsVersion: 'Minimum TLS Version',
         certType: 'Certificate Type',
         certCloudflare: 'Cloudflare Provided',
@@ -300,6 +331,21 @@ const translations = {
         invalidToken: 'Invalid API Token',
         tokenRequired: 'API Token is required',
         verifyFailed: 'Token verification failed',
+        // DNSPod Management
+        dnspodManager: 'DNSPod Manager',
+        dnspodDomains: 'DNSPod Domains',
+        selectDomain: 'Select Domain',
+        dnspodRecords: 'DNS Records',
+        addDnspodRecord: 'Add Record',
+        editDnspodRecord: 'Edit Record',
+        recordLine: 'Record Line',
+        lineDefault: 'Default',
+        subDomain: 'Host Record',
+        recordValue: 'Record Value',
+        backToCloudflare: 'Back to Cloudflare',
+        dnspodLoginRequired: 'Please login with server mode first',
+        noRecordsFound: 'No records found',
+        confirmDeleteRecord: 'Are you sure you want to delete this record?',
     }
 };
 
@@ -817,6 +863,7 @@ const ZoneDetail = ({ zone, zones, onSwitchZone, onRefreshZones, zonesLoading, a
 
     const handleSaaSSubmit = async (e) => {
         e.preventDefault();
+        const isCreating = !editingSaaS;
         const method = editingSaaS ? 'PATCH' : 'POST';
         const url = `/api/zones/${zone.id}/custom_hostnames${editingSaaS ? `?id=${editingSaaS.id}` : ''}`;
 
@@ -835,10 +882,8 @@ const ZoneDetail = ({ zone, zones, onSwitchZone, onRefreshZones, zonesLoading, a
         if (newSaaS.custom_origin_server && newSaaS.custom_origin_server.trim()) {
             const origin = newSaaS.custom_origin_server.trim();
             payload.custom_origin_server = origin;
-            // Usually we want SNI to match the origin server hostname when overriding
             payload.custom_origin_snihost = origin;
         } else if (editingSaaS) {
-            // Explicitly clear when editing and choice is back to default
             payload.custom_origin_server = null;
             payload.custom_origin_snihost = null;
         }
@@ -850,10 +895,42 @@ const ZoneDetail = ({ zone, zones, onSwitchZone, onRefreshZones, zonesLoading, a
         });
 
         if (res.ok) {
+            const data = await res.json();
             setShowSaaSModal(false);
             setEditingSaaS(null);
             fetchHostnames();
             showToast(editingSaaS ? t('updateSuccess') : t('addSuccess'));
+
+            // Auto configure DNSPod verification for new hostnames (server mode only)
+            if (isCreating && auth?.mode === 'server' && data.result) {
+                const hostname = data.result;
+                const validationRecords = hostname.ssl?.validation_records || [];
+
+                // Process TXT validation records
+                for (const rec of validationRecords) {
+                    if (rec.txt_name && rec.txt_value) {
+                        try {
+                            const verifyRes = await fetch(`/api/zones/${zone.id}/auto_verify`, {
+                                method: 'POST',
+                                headers: getHeaders(true),
+                                body: JSON.stringify({
+                                    hostname: hostname.hostname,
+                                    txt_name: rec.txt_name,
+                                    txt_value: rec.txt_value,
+                                    record_type: 'TXT'
+                                })
+                            });
+                            const verifyData = await verifyRes.json();
+                            if (verifyData.success) {
+                                showToast(t('autoVerifySuccess'));
+                            }
+                            // Silently ignore failures - user can still configure manually
+                        } catch {
+                            // Silently ignore auto-verify failures
+                        }
+                    }
+                }
+            }
         } else {
             const data = await res.json().catch(() => ({}));
             showToast(data.message || t('errorOccurred'), 'error');
@@ -1981,6 +2058,402 @@ const ZoneDetail = ({ zone, zones, onSwitchZone, onRefreshZones, zonesLoading, a
     );
 };
 
+// DNSPod Manager Component
+const DnspodManager = ({ auth, onBack, t, showToast }) => {
+    const [domains, setDomains] = useState([]);
+    const [selectedDomain, setSelectedDomain] = useState(null);
+    const [records, setRecords] = useState([]);
+    const [loading, setLoading] = useState(false);
+    const [searchTerm, setSearchTerm] = useState('');
+    const [showModal, setShowModal] = useState(false);
+    const [editingRecord, setEditingRecord] = useState(null);
+    const [confirmModal, setConfirmModal] = useState({ show: false, title: '', message: '', onConfirm: null });
+    const [newRecord, setNewRecord] = useState({
+        SubDomain: '',
+        RecordType: 'A',
+        RecordLine: '默认',
+        Value: '',
+        TTL: 600,
+        MX: 10
+    });
+
+    const openConfirm = (title, message, onConfirm) => {
+        setConfirmModal({ show: true, title, message, onConfirm });
+    };
+
+    const getHeaders = (withType = false) => getAuthHeaders(auth, withType);
+
+    // Fetch DNSPod domains
+    const fetchDomains = async () => {
+        setLoading(true);
+        try {
+            const res = await fetch('/api/dnspod', {
+                method: 'POST',
+                headers: getHeaders(true),
+                body: JSON.stringify({ action: 'DescribeDomainList' })
+            });
+            const data = await res.json();
+            if (data.Response?.DomainList) {
+                setDomains(data.Response.DomainList);
+                if (data.Response.DomainList.length > 0 && !selectedDomain) {
+                    setSelectedDomain(data.Response.DomainList[0]);
+                }
+            }
+        } catch (e) {
+            showToast(t('errorOccurred'), 'error');
+        }
+        setLoading(false);
+    };
+
+    // Fetch records for selected domain
+    const fetchRecords = async () => {
+        if (!selectedDomain) return;
+        setLoading(true);
+        try {
+            const res = await fetch('/api/dnspod', {
+                method: 'POST',
+                headers: getHeaders(true),
+                body: JSON.stringify({
+                    action: 'DescribeRecordList',
+                    Domain: selectedDomain.Name
+                })
+            });
+            const data = await res.json();
+            setRecords(data.Response?.RecordList || []);
+        } catch (e) {
+            showToast(t('errorOccurred'), 'error');
+        }
+        setLoading(false);
+    };
+
+    useEffect(() => {
+        fetchDomains();
+    }, []);
+
+    useEffect(() => {
+        if (selectedDomain) {
+            fetchRecords();
+        }
+    }, [selectedDomain]);
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        setLoading(true);
+        try {
+            const payload = {
+                action: editingRecord ? 'ModifyRecord' : 'CreateRecord',
+                Domain: selectedDomain.Name,
+                SubDomain: newRecord.SubDomain || '@',
+                RecordType: newRecord.RecordType,
+                RecordLine: newRecord.RecordLine,
+                Value: newRecord.Value,
+                TTL: parseInt(newRecord.TTL) || 600
+            };
+            if (newRecord.RecordType === 'MX') {
+                payload.MX = parseInt(newRecord.MX) || 10;
+            }
+            if (editingRecord) {
+                payload.RecordId = editingRecord.RecordId;
+            }
+
+            const res = await fetch('/api/dnspod', {
+                method: 'POST',
+                headers: getHeaders(true),
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if (data.success) {
+                showToast(editingRecord ? t('updateSuccess') : t('addSuccess'));
+                setShowModal(false);
+                setEditingRecord(null);
+                setNewRecord({ SubDomain: '', RecordType: 'A', RecordLine: '默认', Value: '', TTL: 600, MX: 10 });
+                fetchRecords();
+            } else {
+                showToast(data.Response?.Error?.Message || t('errorOccurred'), 'error');
+            }
+        } catch (e) {
+            showToast(t('errorOccurred'), 'error');
+        }
+        setLoading(false);
+    };
+
+    const deleteRecord = async (recordId) => {
+        openConfirm(t('confirmTitle'), t('confirmDeleteRecord'), async () => {
+            try {
+                const res = await fetch('/api/dnspod', {
+                    method: 'POST',
+                    headers: getHeaders(true),
+                    body: JSON.stringify({
+                        action: 'DeleteRecord',
+                        Domain: selectedDomain.Name,
+                        RecordId: recordId
+                    })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast(t('deleteSuccess'));
+                    fetchRecords();
+                } else {
+                    showToast(data.Response?.Error?.Message || t('errorOccurred'), 'error');
+                }
+            } catch (e) {
+                showToast(t('errorOccurred'), 'error');
+            }
+        });
+    };
+
+    const startEdit = (record) => {
+        setEditingRecord(record);
+        setNewRecord({
+            SubDomain: record.Name,
+            RecordType: record.Type,
+            RecordLine: record.Line,
+            Value: record.Value,
+            TTL: record.TTL,
+            MX: record.MX || 10
+        });
+        setShowModal(true);
+    };
+
+    const filteredRecords = records.filter(r =>
+        r.Name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        r.Value?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        r.Type?.toLowerCase().includes(searchTerm.toLowerCase())
+    );
+
+    return (
+        <div className="container" style={{ padding: '1.5rem 1rem' }}>
+            {/* Header */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                    <button className="btn btn-outline" onClick={onBack} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <ArrowLeft size={16} />
+                        {t('backToCloudflare')}
+                    </button>
+                    <h2 style={{ margin: 0, fontSize: '1.25rem' }}>{t('dnspodManager')}</h2>
+                </div>
+                <button className="btn btn-primary" onClick={() => fetchDomains()} disabled={loading}>
+                    <RefreshCw size={16} className={loading ? 'spin' : ''} />
+                    {t('refresh')}
+                </button>
+            </div>
+
+            {/* Domain Selector */}
+            <div className="glass-card" style={{ padding: '1rem', marginBottom: '1.5rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+                    <label style={{ fontWeight: 600, fontSize: '0.875rem' }}>{t('selectDomain')}:</label>
+                    <div style={{ flex: 1, minWidth: '200px' }}>
+                        <CustomSelect
+                            value={selectedDomain?.Name || ''}
+                            onChange={(e) => {
+                                const domain = domains.find(d => d.Name === e.target.value);
+                                setSelectedDomain(domain);
+                            }}
+                            options={domains.map(d => ({ value: d.Name, label: d.Name }))}
+                        />
+                    </div>
+                    <button className="btn btn-primary" onClick={() => { setEditingRecord(null); setNewRecord({ SubDomain: '', RecordType: 'A', RecordLine: '默认', Value: '', TTL: 600, MX: 10 }); setShowModal(true); }}>
+                        <Plus size={16} />
+                        {t('addDnspodRecord')}
+                    </button>
+                </div>
+            </div>
+
+            {/* Search */}
+            <div style={{ marginBottom: '1rem' }}>
+                <div style={{ position: 'relative', maxWidth: '300px' }}>
+                    <Search size={16} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+                    <input
+                        type="text"
+                        placeholder={t('searchPlaceholder')}
+                        value={searchTerm}
+                        onChange={(e) => setSearchTerm(e.target.value)}
+                        style={{ paddingLeft: '36px', width: '100%' }}
+                    />
+                </div>
+            </div>
+
+            {/* Records Table */}
+            {loading && records.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
+                    <RefreshCw className="spin" size={32} />
+                    <p style={{ marginTop: '1rem' }}>{t('loading')}</p>
+                </div>
+            ) : filteredRecords.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
+                    <p>{t('noRecordsFound')}</p>
+                </div>
+            ) : (
+                <>
+                    <table className="desktop-only" style={{ width: '100%', borderCollapse: 'separate', borderSpacing: '0 8px' }}>
+                        <thead>
+                            <tr style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
+                                <th style={{ textAlign: 'left', padding: '0 12px' }}>{t('type')}</th>
+                                <th style={{ textAlign: 'left', padding: '0 12px' }}>{t('subDomain')}</th>
+                                <th style={{ textAlign: 'left', padding: '0 12px' }}>{t('recordValue')}</th>
+                                <th style={{ textAlign: 'left', padding: '0 12px' }}>{t('recordLine')}</th>
+                                <th style={{ textAlign: 'left', padding: '0 12px' }}>TTL</th>
+                                <th style={{ textAlign: 'right', padding: '0 12px' }}>{t('action')}</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {filteredRecords.map(r => (
+                                <tr key={r.RecordId} className="record-row">
+                                    <td><span className="badge badge-blue">{r.Type}</span></td>
+                                    <td style={{ fontFamily: 'monospace', fontWeight: 500 }}>{r.Name || '@'}</td>
+                                    <td style={{ fontFamily: 'monospace', fontSize: '0.8125rem', maxWidth: '300px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.Value}</td>
+                                    <td style={{ fontSize: '0.8125rem', color: 'var(--text-muted)' }}>{r.Line}</td>
+                                    <td style={{ fontSize: '0.8125rem', color: 'var(--text-muted)' }}>{r.TTL}</td>
+                                    <td>
+                                        <div style={{ display: 'flex', gap: '4px', justifyContent: 'flex-end' }}>
+                                            <button className="btn btn-outline" style={{ padding: '0.4rem', border: 'none' }} onClick={() => startEdit(r)}>
+                                                <Edit2 size={16} color="var(--primary)" />
+                                            </button>
+                                            <button className="btn btn-outline" style={{ padding: '0.4rem', border: 'none' }} onClick={() => deleteRecord(r.RecordId)}>
+                                                <Trash2 size={16} color="var(--error)" />
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+
+                    {/* Mobile Cards */}
+                    <div className="mobile-only">
+                        {filteredRecords.map(r => (
+                            <div key={r.RecordId} className="record-card" style={{ padding: '0.875rem', marginBottom: '8px' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
+                                    <div>
+                                        <span className="badge badge-blue" style={{ marginRight: '8px' }}>{r.Type}</span>
+                                        <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{r.Name || '@'}</span>
+                                    </div>
+                                    <div style={{ display: 'flex', gap: '4px' }}>
+                                        <button className="btn btn-outline" style={{ padding: '0.35rem', border: 'none' }} onClick={() => startEdit(r)}>
+                                            <Edit2 size={15} color="var(--primary)" />
+                                        </button>
+                                        <button className="btn btn-outline" style={{ padding: '0.35rem', border: 'none' }} onClick={() => deleteRecord(r.RecordId)}>
+                                            <Trash2 size={15} color="var(--error)" />
+                                        </button>
+                                    </div>
+                                </div>
+                                <div style={{ fontFamily: 'monospace', fontSize: '0.8125rem', color: 'var(--text-muted)', wordBreak: 'break-all' }}>{r.Value}</div>
+                            </div>
+                        ))}
+                    </div>
+                </>
+            )}
+
+            {/* Add/Edit Modal */}
+            {showModal && (
+                <div
+                    style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.4)', backdropFilter: 'blur(4px)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 }}
+                    onClick={(e) => { if (e.target === e.currentTarget) setShowModal(false); }}
+                >
+                    <div className="glass-card fade-in" style={{ padding: '2rem', maxWidth: '450px', width: '90%' }}>
+                        <h2 style={{ marginBottom: '1.5rem' }}>{editingRecord ? t('editDnspodRecord') : t('addDnspodRecord')}</h2>
+                        <form onSubmit={handleSubmit}>
+                            <div className="input-row">
+                                <label>{t('type')}</label>
+                                <div style={{ flex: 1 }}>
+                                    <CustomSelect
+                                        value={newRecord.RecordType}
+                                        onChange={(e) => setNewRecord({ ...newRecord, RecordType: e.target.value })}
+                                        options={['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS', 'SRV', 'CAA'].map(t => ({ value: t, label: t }))}
+                                    />
+                                </div>
+                            </div>
+                            <div className="input-row">
+                                <label>{t('subDomain')}</label>
+                                <input
+                                    type="text"
+                                    value={newRecord.SubDomain}
+                                    onChange={(e) => setNewRecord({ ...newRecord, SubDomain: e.target.value })}
+                                    placeholder="@"
+                                />
+                            </div>
+                            <div className="input-row">
+                                <label>{t('recordValue')}</label>
+                                <input
+                                    type="text"
+                                    value={newRecord.Value}
+                                    onChange={(e) => setNewRecord({ ...newRecord, Value: e.target.value })}
+                                    required
+                                />
+                            </div>
+                            <div className="input-row">
+                                <label>{t('recordLine')}</label>
+                                <div style={{ flex: 1 }}>
+                                    <CustomSelect
+                                        value={newRecord.RecordLine}
+                                        onChange={(e) => setNewRecord({ ...newRecord, RecordLine: e.target.value })}
+                                        options={[
+                                            { value: '默认', label: t('lineDefault') },
+                                            { value: '电信', label: '电信' },
+                                            { value: '联通', label: '联通' },
+                                            { value: '移动', label: '移动' },
+                                            { value: '境外', label: '境外' }
+                                        ]}
+                                    />
+                                </div>
+                            </div>
+                            {newRecord.RecordType === 'MX' && (
+                                <div className="input-row">
+                                    <label>{t('priority')}</label>
+                                    <input
+                                        type="number"
+                                        value={newRecord.MX}
+                                        onChange={(e) => setNewRecord({ ...newRecord, MX: parseInt(e.target.value) })}
+                                        min="1"
+                                        max="100"
+                                    />
+                                </div>
+                            )}
+                            <div className="input-row">
+                                <label>TTL</label>
+                                <div style={{ flex: 1 }}>
+                                    <CustomSelect
+                                        value={newRecord.TTL.toString()}
+                                        onChange={(e) => setNewRecord({ ...newRecord, TTL: parseInt(e.target.value) })}
+                                        options={[
+                                            { value: '1', label: t('ttlAuto') },
+                                            { value: '60', label: '1 ' + t('ttl1m').split(' ')[1] },
+                                            { value: '300', label: '5 ' + t('ttl5m').split(' ')[1] },
+                                            { value: '600', label: '10 min' },
+                                            { value: '3600', label: '1 ' + t('ttl1h').split(' ')[1] }
+                                        ]}
+                                    />
+                                </div>
+                            </div>
+                            <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1.5rem' }}>
+                                <button type="button" className="btn btn-outline" style={{ flex: 1 }} onClick={() => { setShowModal(false); setEditingRecord(null); }}>{t('cancel')}</button>
+                                <button type="submit" className="btn btn-primary" style={{ flex: 1 }} disabled={loading}>{t('save')}</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            )}
+
+            {/* Confirm Modal */}
+            {confirmModal.show && (
+                <div
+                    style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.4)', backdropFilter: 'blur(4px)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 }}
+                    onClick={(e) => { if (e.target === e.currentTarget) setConfirmModal({ show: false }); }}
+                >
+                    <div className="glass-card fade-in" style={{ padding: '2rem', maxWidth: '400px', width: '90%', textAlign: 'center' }}>
+                        <h3 style={{ marginBottom: '1rem' }}>{confirmModal.title}</h3>
+                        <p style={{ marginBottom: '1.5rem', color: 'var(--text-muted)' }}>{confirmModal.message}</p>
+                        <div style={{ display: 'flex', gap: '0.75rem' }}>
+                            <button className="btn btn-outline" style={{ flex: 1 }} onClick={() => setConfirmModal({ show: false })}>{t('cancel')}</button>
+                            <button className="btn btn-primary" style={{ flex: 1, background: 'var(--error)' }} onClick={() => { confirmModal.onConfirm?.(); setConfirmModal({ show: false }); }}>{t('confirm')}</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+};
+
 const App = () => {
     const { t, lang, changeLang, toggleLang } = useTranslate();
     const [auth, setAuth] = useState(null);
@@ -1991,6 +2464,7 @@ const App = () => {
     const [loading, setLoading] = useState(false);
     const [toast, setToast] = useState(null);
     const toastTimer = useRef(null);
+    const [currentPage, setCurrentPage] = useState('cloudflare'); // 'cloudflare' | 'dnspod'
 
     // Close dropdown when clicking outside
     useEffect(() => {
@@ -2156,6 +2630,19 @@ const App = () => {
                         {auth.mode === 'server' ? t('managed') : t('clientOnly')}
                     </div>
 
+                    {auth.mode === 'server' && (
+                        <>
+                            <div style={{ height: '16px', width: '1px', background: 'var(--border)' }}></div>
+                            <button
+                                className={`btn ${currentPage === 'dnspod' ? 'btn-primary' : 'btn-outline'}`}
+                                style={{ padding: '6px 12px', fontSize: '0.75rem' }}
+                                onClick={() => setCurrentPage(currentPage === 'dnspod' ? 'cloudflare' : 'dnspod')}
+                            >
+                                {currentPage === 'dnspod' ? 'Cloudflare' : 'DNSPod'}
+                            </button>
+                        </>
+                    )}
+
                     <div style={{ height: '16px', width: '1px', background: 'var(--border)' }}></div>
 
 
@@ -2248,7 +2735,14 @@ const App = () => {
             </header>
 
             <main style={{ paddingBottom: '3rem' }}>
-                {selectedZone ? (
+                {currentPage === 'dnspod' ? (
+                    <DnspodManager
+                        auth={auth}
+                        onBack={() => setCurrentPage('cloudflare')}
+                        t={t}
+                        showToast={showToast}
+                    />
+                ) : selectedZone ? (
                     <ZoneDetail
                         zone={selectedZone}
                         zones={zones}

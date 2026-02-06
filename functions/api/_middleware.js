@@ -49,6 +49,9 @@ export async function onRequest(context) {
             }
 
             context.data.cfToken = serverToken;
+            // Inject DNSPod credentials for managed mode
+            context.data.dnspodSecretId = env.DNSPOD_SECRET_ID;
+            context.data.dnspodSecretKey = env.DNSPOD_SECRET_KEY;
             return next();
         } catch (e) {
             return new Response(JSON.stringify({ error: 'Invalid or expired session.', message: e.message }), {
