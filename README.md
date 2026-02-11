@@ -34,6 +34,8 @@
 4. 添加 `CF_API_TOKEN1` 变量（可选）
 5. 添加 `CF_API_TOKEN2` 变量（可选）
 6. 返回部署页面，选择"重新部署"
+#### API 令牌权限推荐：区域.DNS.编辑，区域.SSL和证书.编辑
+
 
 #### DNSPod 集成（可选，托管模式）
 
@@ -45,7 +47,15 @@
 
 配置后，创建自定义主机名时会自动在 DNSPod 创建验证记录。
 
-#### API 令牌权限推荐：区域.DNS.编辑，区域.SSL和证书.编辑
+
+#### Komari 集成（可选，托管模式）
+
+如需使用 Komari 服务器 IP 快捷选择功能，请额外设置：
+1. 添加 `KOMARI_BASE_URL` 变量（Komari 面板地址，如 `https://komari.example.com`）
+2. 添加 `KOMARI_API_TOKEN` 变量（Komari API 令牌）
+
+配置后，在 DNS 记录添加/编辑 A 或 AAAA 记录时，可通过下拉框快速选择 Komari 服务器 IP；DNS 列表中已解析的 IP 也会显示对应的 Komari 服务器名称标签。
+
 
 ## 🏗️ 项目架构
 

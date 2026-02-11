@@ -174,6 +174,8 @@ const translations = {
         dnspodLoginRequired: '请先使用服务器模式登录',
         noRecordsFound: '未找到记录',
         confirmDeleteRecord: '确定要删除此记录吗？',
+        komariServer: '选择IP',
+        komariSelectPlaceholder: '选择 Komari 服务器 IP...',
     },
     en: {
         title: 'DNS Manager',
@@ -346,6 +348,8 @@ const translations = {
         dnspodLoginRequired: 'Please login with server mode first',
         noRecordsFound: 'No records found',
         confirmDeleteRecord: 'Are you sure you want to delete this record?',
+        komariServer: 'Select IP',
+        komariSelectPlaceholder: 'Select Komari server IP...',
     }
 };
 
@@ -368,16 +372,95 @@ const useTranslate = () => {
     return { t, lang, changeLang, toggleLang };
 };
 
+// Komari 服务器数据 Hook
+const KOMARI_CACHE_TTL = 10 * 60 * 1000; // 10分钟缓存
+const useKomari = (auth) => {
+    const [servers, setServers] = useState([]);
+    const [komariEnabled, setKomariEnabled] = useState(false);
+    const [loading, setLoading] = useState(false);
+    const cacheRef = useRef({ ts: 0, servers: [], enabled: false });
+
+    const fetchServers = async () => {
+        // 仅托管模式下可用（需要后端环境变量）
+        if (auth?.mode !== 'server') {
+            setKomariEnabled(false);
+            return;
+        }
+        // 缓存未过期则使用缓存
+        if (Date.now() - cacheRef.current.ts < KOMARI_CACHE_TTL && cacheRef.current.ts > 0) {
+            setServers(cacheRef.current.servers);
+            setKomariEnabled(cacheRef.current.enabled);
+            return;
+        }
+        setLoading(true);
+        try {
+            const headers = {};
+            if (auth.token) headers['Authorization'] = `Bearer ${auth.token}`;
+            if (auth.currentAccountIndex !== undefined) {
+                headers['X-Managed-Account-Index'] = String(auth.currentAccountIndex);
+            }
+            const res = await fetch('/api/komari/servers', { headers });
+            const data = await res.json();
+            if (data.enabled) {
+                setServers(data.servers || []);
+                setKomariEnabled(true);
+                cacheRef.current = { ts: Date.now(), servers: data.servers || [], enabled: true };
+            } else {
+                setKomariEnabled(false);
+                cacheRef.current = { ts: Date.now(), servers: [], enabled: false };
+            }
+        } catch {
+            setKomariEnabled(false);
+        }
+        setLoading(false);
+    };
+
+    useEffect(() => {
+        fetchServers();
+    }, [auth?.mode, auth?.token, auth?.currentAccountIndex]);
+
+    // 构建 IP -> 服务器名 映射
+    const ipToNameMap = React.useMemo(() => {
+        const map = new Map();
+        for (const s of servers) {
+            for (const ip of s.ipv4) {
+                const arr = map.get(ip) || [];
+                if (!arr.includes(s.name)) arr.push(s.name);
+                map.set(ip, arr);
+            }
+            for (const ip of s.ipv6) {
+                const arr = map.get(ip) || [];
+                if (!arr.includes(s.name)) arr.push(s.name);
+                map.set(ip, arr);
+            }
+        }
+        return map;
+    }, [servers]);
+
+    // 获取下拉选项
+    const getOptions = (type) => {
+        return servers.flatMap(s => {
+            const list = type === 'AAAA' ? s.ipv6 : s.ipv4;
+            return list.map(ip => ({ value: ip, label: `${s.name} — ${ip}` }));
+        });
+    };
+
+    return { servers, komariEnabled, loading, ipToNameMap, getOptions, refresh: fetchServers };
+};
+
 const getAuthHeaders = (auth, withType = false) => {
     if (!auth) return {};
-    const h = auth.mode === 'server'
-        ? {
-            'Authorization': `Bearer ${auth.token}`,
-            'X-Managed-Account-Index': String(auth.currentAccountIndex || 0)
+    const headers = {};
+    if (auth.mode === 'client') {
+        headers['X-Cloudflare-Token'] = auth.token;
+    } else if (auth.mode === 'server') {
+        headers['Authorization'] = `Bearer ${auth.token}`;
+        if (auth.currentAccountIndex !== undefined) {
+            headers['X-Managed-Account-Index'] = String(auth.currentAccountIndex);
         }
-        : { 'X-Cloudflare-Token': auth.token };
-    if (withType) h['Content-Type'] = 'application/json';
-    return h;
+    }
+    if (withType) headers['Content-Type'] = 'application/json';
+    return headers;
 };
 
 // Custom Select Component
@@ -660,6 +743,9 @@ const ZoneDetail = ({ zone, zones, onSwitchZone, onRefreshZones, zonesLoading, a
     const [loading, setLoading] = useState(false);
     const [searchTerm, setSearchTerm] = useState('');
     const [error, setError] = useState(null);
+
+    // Komari 集成
+    const { komariEnabled, ipToNameMap, getOptions: getKomariOptions } = useKomari(auth);
     const [expandedRecords, setExpandedRecords] = useState(new Set());
     const [showVerifyModal, setShowVerifyModal] = useState(false);
     const [verifyingSaaS, setVerifyingSaaS] = useState(null);
@@ -1413,7 +1499,14 @@ const ZoneDetail = ({ zone, zones, onSwitchZone, onRefreshZones, zonesLoading, a
                                                 <div style={{ fontWeight: 600 }}>{record.name}</div>
                                                 {record.comment && <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{record.comment}</div>}
                                             </td>
-                                            <td className="truncate-mobile" style={{ color: 'var(--text-muted)', fontSize: '0.8125rem' }}>{record.content}</td>
+                                            <td className="truncate-mobile" style={{ color: 'var(--text-muted)', fontSize: '0.8125rem' }}>
+                                                {record.content}
+                                                {komariEnabled && ipToNameMap.has(record.content) && (
+                                                    <span style={{ marginLeft: '6px', padding: '1px 6px', borderRadius: '10px', background: '#f0f0ff', color: '#6366f1', fontSize: '0.6875rem', border: '1px solid #c7d2fe', whiteSpace: 'nowrap' }}>
+                                                        {ipToNameMap.get(record.content).join(', ')}
+                                                    </span>
+                                                )}
+                                            </td>
                                             <td style={{ fontSize: '0.8125rem' }}>{record.ttl === 1 ? t('ttlAuto') : record.ttl}</td>
                                             <td>
                                                 {['A', 'AAAA', 'CNAME'].includes(record.type) ? (
@@ -1494,6 +1587,11 @@ const ZoneDetail = ({ zone, zones, onSwitchZone, onRefreshZones, zonesLoading, a
                                                         showToast(t('copied'));
                                                     }}>
                                                         {record.content}
+                                                        {komariEnabled && ipToNameMap.has(record.content) && (
+                                                            <span style={{ marginLeft: '4px', padding: '1px 5px', borderRadius: '8px', background: '#f0f0ff', color: '#6366f1', fontSize: '0.625rem', border: '1px solid #c7d2fe', whiteSpace: 'nowrap' }}>
+                                                                {ipToNameMap.get(record.content).join(', ')}
+                                                            </span>
+                                                        )}
                                                     </div>
                                                     <div className="ttl-box">
                                                         <span className="ttl-label">TTL</span>
@@ -1672,6 +1770,23 @@ const ZoneDetail = ({ zone, zones, onSwitchZone, onRefreshZones, zonesLoading, a
                                     <input type="text" value={newRecord.content} onChange={e => setNewRecord({ ...newRecord, content: e.target.value })} placeholder={newRecord.type === 'LOC' ? '33 40 31 N 106 28 29 W 10m' : 'Value'} required />
                                 </div>
                             )}
+
+                            {komariEnabled && ['A', 'AAAA'].includes(newRecord.type) && (() => {
+                                const opts = getKomariOptions(newRecord.type);
+                                return opts.length > 0 ? (
+                                    <div className="input-row">
+                                        <label>{t('komariServer')}</label>
+                                        <div style={{ flex: 1 }}>
+                                            <CustomSelect
+                                                value={newRecord.content}
+                                                onChange={(e) => setNewRecord({ ...newRecord, content: e.target.value })}
+                                                options={[{ value: '', label: t('komariSelectPlaceholder') }, ...opts]}
+                                                placeholder={t('komariSelectPlaceholder')}
+                                            />
+                                        </div>
+                                    </div>
+                                ) : null;
+                            })()}
 
                             {newRecord.type === 'SRV' && (
                                 <>

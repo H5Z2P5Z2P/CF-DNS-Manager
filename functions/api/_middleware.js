@@ -52,6 +52,9 @@ export async function onRequest(context) {
             // Inject DNSPod credentials for managed mode
             context.data.dnspodSecretId = env.DNSPOD_SECRET_ID;
             context.data.dnspodSecretKey = env.DNSPOD_SECRET_KEY;
+            // 注入 Komari 凭证
+            context.data.komariBaseUrl = env.KOMARI_BASE_URL;
+            context.data.komariApiToken = env.KOMARI_API_TOKEN;
             return next();
         } catch (e) {
             return new Response(JSON.stringify({ error: 'Invalid or expired session.', message: e.message }), {
